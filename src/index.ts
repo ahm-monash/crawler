@@ -4,6 +4,7 @@ import { getPackageManifest } from "query-registry";
 import { RequestCounter } from "./rate-limiting/request-counter";
 import { TokenBucket } from "./rate-limiting/token-bucket";
 import { sleep, getAccessToken } from "./utils";
+import { printHashBar, printSpacer } from "./ioFormatting";
 
 var Map = require('es6-map');
 
@@ -25,57 +26,74 @@ type Repository = RestEndpointMethodTypes["repos"]["listForOrg"]["response"]["da
 // Defining the GitHub API client.
 let octokit: Octokit
 
-function generateDependencyTree(data: [string, string, any, [string, string][]][]): any {
-	let depNameMap: Map<string, number> = new Map();
-	let versions: Map<number, string> = new Map();
+/*
+Print a nice report for the given repository
+*/
+async function printDependencies(packageJsonContent: any, repo: Repository, dependenciesVersions: any, dependencies: [string, string][]){
+	const name = packageJsonContent?.name;
+	const version = packageJsonContent?.version;
+	const description = packageJsonContent?.description;
+	const keywords = packageJsonContent?.keywords;
 
-	let repos: any[] = [];
+	printHashBar()
 
-	for (const [name, version, dependencies, newest] of data) {
-		if (!depNameMap.has(name)) { depNameMap.set(name, depNameMap.size) }
+	// Extract and print some information that might be useful for future use.
+	console.log("GitHub information:")
+	console.log("Name:", repo.name)
+	console.log("Description:", repo.description ? repo.description : "[Missing]")
+	console.log("Language:", repo.language ? repo.language : "[Missing]")
+	console.log("Last Updated:", repo.updated_at ? repo.updated_at : "[Missing]")
 
-		for (const [depName, depVersion] of newest) {
-			if (!depNameMap.has(depName)) { depNameMap.set(depName, depNameMap.size) }
-			versions.set(depNameMap.get(depName), depVersion)
-		}
+	console.log()
 
-		let deps = []
+	// Extract and print some information that might be useful for future use.
+	console.log("package.json information:")
 
-		for (const depName in dependencies) {
-			const depVersion = dependencies[depName]
-			if (!depNameMap.has(depName)) { depNameMap.set(depName, depNameMap.size) }
-			deps.push([depNameMap.get(depName), depVersion])
-		}
+	console.log("Name:", name ? name : "[Missing]");
+	console.log("Version:", version ? version : "[Missing]");
+	console.log("Description:", description ? description : "[Missing]");
+	console.log("Keywords:", keywords ? keywords : "");
 
+	console.log()
+	console.log()
+	console.log("Dependencies:")
 
-		repos.push({
-			dep: depNameMap.get(name),
-			version: version,
-			dependencies: deps,
-		})
+	if (dependenciesVersions.length === 0) {
+		console.log("\t None found")
 	}
 
-	console.log(depNameMap)
-	console.log(versions)
+	for(const [dependency, version] of dependenciesVersions){
+		console.log("\t", dependency, " - Used version:", dependencies[dependency], "| Latest version:", version)
+	}
 
-	// //I honestly have no idea
-	// interface Dependency {
-	// 	name: string;
-	// 	version: string;
-	//   }
+	printHashBar()
+	console.log()
+}
 
-	// let depNames: Record<number, Dependency> = {};
-	// for(const [depName, id] of Object.entries(depNameMap)){
-	// 	console.log(id.toString() + ' ' + depName + ' ' +  versions[id])
-	// 	depNames[id.toString()] = {name: depName, version: versions[id]}
-	// }
-	// console.log(depNames)
-	//return [depNames, repos]
-	return repos
+function printRateLimitInfo(startTime: Date, endTime: Date, rateLimiter: RateLimiter){
+	const elapsedInMinutes = (endTime.getTime() - startTime.getTime()) / 1000 / 60
+
+	let printRT = function printRequestTimes(name: string, total: number){
+		console.log(name, " requests:")
+		console.log("\t",
+			"Total:",
+			total,
+			"Average:",
+			(total / (elapsedInMinutes * 60)).toFixed(2),
+			"reqs/s")
+	}
+
+	printSpacer()
+
+	console.log("Elapsed time:", elapsedInMinutes.toFixed(2), "minutes")
+
+	printRT("Github", rateLimiter.Github.reqCounter.getTotalRequests())
+	printRT("npm", rateLimiter.npm.reqCounter.getTotalRequests())
+	printRT("Total", rateLimiter.Github.reqCounter.getTotalRequests() + rateLimiter.npm.reqCounter.getTotalRequests())
 }
 
 //Find dependencies of a repository
-async function findDependencies(repo: Repository, rateLimiter: RateLimiter): Promise<[string, string, any, [string, string][]]> {
+async function findDependencies(repo: Repository, rateLimiter: RateLimiter): Promise<[string, string, string, any, [string, string][]]> {
 
 	// Get main_branch name from repo
 	await rateLimiter.Github.tokenBucket.waitForTokens(1)
@@ -160,46 +178,99 @@ async function findDependencies(repo: Repository, rateLimiter: RateLimiter): Pro
 		dependenciesVersions.push([dependency, manifest.version])
 	}
 
-	//Print a nice report for this repository
+	await printDependencies(packageJsonContent, repo, dependenciesVersions, dependencies)
 
-	console.log("#############################################################################################")
 	const name = packageJsonContent?.name;
 	const version = packageJsonContent?.version;
-	const description = packageJsonContent?.description;
-	const keywords = packageJsonContent?.keywords;
+	return [name, version, branch.data._links.html, dependencies, dependenciesVersions]
+}
 
-	// Extract and print some information that might be useful for future use.
-	console.log("GitHub information:")
-	console.log("Name:", repo.name);
-	repo.description && console.log("Description:", repo.description);
-	repo.language && console.log("Language:", repo.language);
-	repo.updated_at && console.log("Last Updated:", repo.updated_at);
+function depDataToJson(nameMap: Map<string, number>, data: Map<number, {version: string, link: string}>): string{
+	let res = ""
 
-	console.log()
+	res += '{'
 
-	// Extract and print some information that might be useful for future use.
-	console.log("package.json information:")
-
-	name && console.log("Name:", name);
-	version && console.log("Version:", version);
-	description && console.log("Description:", description);
-	keywords && console.log("Keywords:", keywords);
-
-	console.log()
-	console.log()
-	console.log("Dependencies:")
-
-	if (dependenciesVersions.length === 0) {
-		console.log("\t None found")
+	for(const [name, id] of nameMap){
+		const thisData = data.get(id)
+		res += "\"" + id.toString() + "\": {"
+		res += "\"name\": \"" + name + "\","
+		res += "\"version\": \"" + thisData.version  + "\","
+		res += "\"link\": \"" + thisData.link + "\""
+		res += "}, "
 	}
 
-	dependenciesVersions.forEach(([dependency, version]) => {
-		console.log("\t", dependency, " - Used version:", dependencies[dependency], "| Latest version:", version)
-	})
-	console.log("#############################################################################################")
-	console.log()
+	//Remove extra comma, as trailing commas aren't allowed in JSON
+	if(res.length > 2){
+		res = res.slice(0, -2)
+	}
 
-	return [name, version, dependencies, dependenciesVersions]
+	res += '}'
+
+	return res
+}
+
+function generateDependencyTree(data: Awaited<ReturnType<typeof findDependencies>>[]): any {
+	let depNameMap: Map<string, number> = new Map();
+
+	let depData: Map<number, {version: string, link: string}> = new Map();
+
+	let repos: any[] = [];
+
+	//This version here is wrong, we only use it if we have nothing else (it will get overwritten later)
+	for (const [name, version, link, dependencies, newest] of data) {
+		if (!depNameMap.has(name)) {
+			depNameMap.set(name, depNameMap.size)
+			depData.set(depNameMap.get(name), {version: version ? version : "", link: link })
+		} else{
+			depData.get(depNameMap.get(name)).link = link
+		}
+
+		//TODO: The newest array shouldn be shared across all dependencies
+		for (const [depName, depVersion] of newest) {
+			if (!depNameMap.has(depName)) {
+				depNameMap.set(depName, depNameMap.size)
+				depData.set(depNameMap.get(depName), {version: "", link: ""})
+			}
+			depData.get(depNameMap.get(depName)).version = depVersion
+		}
+
+		let deps = []
+
+		for (const depName in dependencies) {
+			const depVersion = dependencies[depName]
+			if (!depNameMap.has(depName)) {
+				depNameMap.set(depName, depNameMap.size)
+				depData.set(depNameMap.get(depName), {version: "", link: ""})
+			}
+			deps.push([depNameMap.get(depName), depVersion])
+		}
+
+
+		repos.push({
+			dep: depNameMap.get(name),
+			dependencies: deps,
+		})
+	}
+
+	console.log(depNameMap)
+	console.log(depData)
+
+	console.log(depDataToJson(depNameMap, depData))
+
+	// //I honestly have no idea
+	// interface Dependency {
+	// 	name: string;
+	// 	version: string;
+	//   }
+
+	// let depNames: Record<number, Dependency> = {};
+	// for(const [depName, id] of Object.entries(depNameMap)){
+	// 	console.log(id.toString() + ' ' + depName + ' ' +  versions[id])
+	// 	depNames[id.toString()] = {name: depName, version: versions[id]}
+	// }
+	// console.log(depNames)
+	//return [depNames, repos]
+	return repos
 }
 
 //Main function
@@ -220,7 +291,6 @@ async function main() {
 			timeout: 30000,
 		}
 	})
-
 
 	// List the public repositories owned by the octokit organization:
 	const repos = await octokit.repos.listForOrg({
@@ -250,7 +320,7 @@ async function main() {
 
 	const startTime = new Date();
 
-	let allDeps: [string, string, any, [string, string][]][] = [];
+	let allDeps: Awaited<ReturnType<typeof findDependencies>>[] = [];
 
 	// For each repository, find its dependencies
 	for (const repo of jsOrTsRepos) {
@@ -281,41 +351,11 @@ async function main() {
 
 	//Print req counters report
 	const endTime = new Date();
-	const elapsedInMinutes = (endTime.getTime() - startTime.getTime()) / 1000 / 60
 
 	//At this point the bucket queue will be empty, but there might still be some requests in flight.
 	await sleep(3000)
 
-	console.log()
-	console.log("==============================================================")
-	console.log()
-
-	console.log("Elapsed time:", elapsedInMinutes.toFixed(2), "minutes")
-
-	console.log("Github requests:")
-	console.log("\t",
-		"Total:",
-		rateLimiter.Github.reqCounter.getTotalRequests(),
-		"Average:",
-		(rateLimiter.Github.reqCounter.getTotalRequests() / (elapsedInMinutes * 60)).toFixed(2),
-		"reqs/s")
-
-	console.log("npm requests:")
-	console.log("\t",
-		"Total:",
-		rateLimiter.npm.reqCounter.getTotalRequests(),
-		"Average:",
-		(rateLimiter.npm.reqCounter.getTotalRequests() / (elapsedInMinutes * 60)).toFixed(2),
-		"reqs/s")
-
-	console.log("Total requests:")
-	console.log("\t",
-		"Total:",
-		rateLimiter.Github.reqCounter.getTotalRequests() + rateLimiter.npm.reqCounter.getTotalRequests(),
-		"Average:",
-		((rateLimiter.Github.reqCounter.getTotalRequests() + rateLimiter.npm.reqCounter.getTotalRequests()) / (elapsedInMinutes * 60)).toFixed(2),
-		"reqs/s")
-
+	printRateLimitInfo(startTime, endTime, rateLimiter);
 
 	console.log(JSON.stringify(generateDependencyTree(allDeps)))
 }
