@@ -93,7 +93,7 @@ function printRateLimitInfo(startTime: Date, endTime: Date, rateLimiter: RateLim
 }
 
 //Find dependencies of a repository
-async function findDependencies(repo: Repository, rateLimiter: RateLimiter): Promise<[string, string, string, any, [string, string][]]> {
+async function findDependencies(repo: Repository, rateLimiter: RateLimiter): Promise<[string, string, string, boolean, any, [string, string][]]> {
 
 	// Get main_branch name from repo
 	await rateLimiter.Github.tokenBucket.waitForTokens(1)
@@ -182,10 +182,10 @@ async function findDependencies(repo: Repository, rateLimiter: RateLimiter): Pro
 
 	const name = packageJsonContent?.name;
 	const version = packageJsonContent?.version;
-	return [name, version, branch.data._links.html, dependencies, dependenciesVersions]
+	return [name, version, branch.data._links.html, r.data.archived, dependencies, dependenciesVersions]
 }
 
-function depDataToJson(nameMap: Map<string, number>, data: Map<number, {version: string, link: string}>): string{
+function depDataToJson(nameMap: Map<string, number>, data: Map<number, {version: string, link: string, internal: boolean, archived: boolean}>): string{
 	let res = ""
 
 	res += '{'
@@ -195,7 +195,9 @@ function depDataToJson(nameMap: Map<string, number>, data: Map<number, {version:
 		res += "\"" + id.toString() + "\": {"
 		res += "\"name\": \"" + name + "\","
 		res += "\"version\": \"" + thisData.version  + "\","
-		res += "\"link\": \"" + thisData.link + "\""
+		res += "\"link\": \"" + thisData.link + "\","
+		res += "\"internal\": " + thisData.internal + ","
+		res += "\"archived\": " + thisData.archived + ""
 		res += "}, "
 	}
 
@@ -212,24 +214,25 @@ function depDataToJson(nameMap: Map<string, number>, data: Map<number, {version:
 function generateDependencyTree(data: Awaited<ReturnType<typeof findDependencies>>[]): any {
 	let depNameMap: Map<string, number> = new Map();
 
-	let depData: Map<number, {version: string, link: string}> = new Map();
+	let depData: Map<number, {version: string, link: string, internal: boolean, archived: boolean}> = new Map();
 
 	let repos: any[] = [];
 
 	//This version here is wrong, we only use it if we have nothing else (it will get overwritten later)
-	for (const [name, version, link, dependencies, newest] of data) {
+	for (const [name, version, link, isArchived, dependencies, newest] of data) {
 		if (!depNameMap.has(name)) {
 			depNameMap.set(name, depNameMap.size)
-			depData.set(depNameMap.get(name), {version: version ? version : "", link: link })
+			depData.set(depNameMap.get(name), {version: version ? version : "", link: link, internal: true, archived: isArchived})
 		} else{
 			depData.get(depNameMap.get(name)).link = link
+			depData.get(depNameMap.get(name)).internal = true
 		}
 
 		//TODO: The newest array shouldn be shared across all dependencies
 		for (const [depName, depVersion] of newest) {
 			if (!depNameMap.has(depName)) {
 				depNameMap.set(depName, depNameMap.size)
-				depData.set(depNameMap.get(depName), {version: "", link: ""})
+				depData.set(depNameMap.get(depName), {version: "", link: "", internal: false,  archived: false})
 			}
 			depData.get(depNameMap.get(depName)).version = depVersion
 		}
@@ -240,11 +243,10 @@ function generateDependencyTree(data: Awaited<ReturnType<typeof findDependencies
 			const depVersion = dependencies[depName]
 			if (!depNameMap.has(depName)) {
 				depNameMap.set(depName, depNameMap.size)
-				depData.set(depNameMap.get(depName), {version: "", link: ""})
+				depData.set(depNameMap.get(depName), {version: "", link: "", internal: false,  archived: false})
 			}
 			deps.push([depNameMap.get(depName), depVersion])
 		}
-
 
 		repos.push({
 			dep: depNameMap.get(name),
@@ -320,11 +322,11 @@ async function main() {
 
 	const startTime = new Date();
 
-	let allDeps: Awaited<ReturnType<typeof findDependencies>>[] = [];
+	let allDepPromises: ReturnType<typeof findDependencies>[] = [];
 
 	// For each repository, find its dependencies
 	for (const repo of jsOrTsRepos) {
-		allDeps.push(await findDependencies(repo, rateLimiter))
+		allDepPromises.push(findDependencies(repo, rateLimiter))
 
 		//! This doesn't have much sense here, but I decided to leave it here to avoid forgetting about it.
 		//Avoid building of backpressure if the queues are too long
@@ -337,6 +339,8 @@ async function main() {
 		// 	])
 		// }
 	}
+
+	const allDeps: Awaited<ReturnType<typeof findDependencies>>[] =  await Promise.all(allDepPromises);
 
 	//Wait for all requests to finish
 	console.log("Waiting for all requests to finish")
