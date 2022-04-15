@@ -18,5 +18,6 @@
 	  "outDir": "./build/",
 	  "allowSyntheticDefaultImports": true,
 	  "experimentalDecorators": true,
+	  "downlevelIteration": true
 	}
   }

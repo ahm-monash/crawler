@@ -1,4 +1,4 @@
-import { sleep } from "../utilts"
+import { sleep } from "../utils"
 
 /**
  * TokenBucket implements the token bucket algorithm to make it easy
