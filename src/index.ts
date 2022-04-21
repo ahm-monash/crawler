@@ -93,7 +93,7 @@ function printRateLimitInfo(startTime: Date, endTime: Date, rateLimiter: RateLim
 }
 
 //Find dependencies of a repository
-async function findDependencies(repo: Repository, rateLimiter: RateLimiter): Promise<[string, string, string, boolean, any, [string, string][]]> {
+async function findDependencies(repo: Repository, rateLimiter: RateLimiter): Promise<[string, string, string, boolean, any/*, [string, string][]*/]> {
 
 	// Get main_branch name from repo
 	await rateLimiter.Github.tokenBucket.waitForTokens(1)
@@ -167,22 +167,65 @@ async function findDependencies(repo: Repository, rateLimiter: RateLimiter): Pro
 
 	//Use the npm api to get the version of dependencies
 	const dependencies = packageJsonContent?.dependencies || {}
+
+
 	//We'll store them here to print them later
-	const dependenciesVersions: [string, string][] = []
+	// const dependenciesVersions: [string, string][] = []
 
-	for (const dependency in dependencies) {
-		await rateLimiter.npm.tokenBucket.waitForTokens(1)
-		rateLimiter.npm.reqCounter.addRequest()
-		const manifest = await getPackageManifest({ name: dependency })
+	// for (const dependency in dependencies) {
+	// 	await rateLimiter.npm.tokenBucket.waitForTokens(1)
+	// 	rateLimiter.npm.reqCounter.addRequest()
+	// 	const manifest = await getPackageManifest({ name: dependency })
 
-		dependenciesVersions.push([dependency, manifest.version])
-	}
+	// 	dependenciesVersions.push([dependency, manifest.version])
+	// }
 
-	await printDependencies(packageJsonContent, repo, dependenciesVersions, dependencies)
+	//await printDependencies(packageJsonContent, repo, dependenciesVersions, dependencies)
 
 	const name = packageJsonContent?.name;
 	const version = packageJsonContent?.version;
-	return [name, version, branch.data._links.html, r.data.archived, dependencies, dependenciesVersions]
+	return [name, version, branch.data._links.html, r.data.archived, dependencies]//, dependenciesVersions]
+}
+
+async function getSingleDep(dependency: string, rateLimiter: RateLimiter){
+	await rateLimiter.npm.tokenBucket.waitForTokens(1)
+	rateLimiter.npm.reqCounter.addRequest()
+	const manifest = await getPackageManifest({ name: dependency })
+	return {name: dependency, data: {version: manifest.version}}
+}
+
+async function getNpmDeps(dependencies: string[], rateLimiter: RateLimiter){
+	let depMap: Map<string, {version: string}> = new Map()
+	// for (const dependency in dependencies) {
+	// 	await rateLimiter.npm.tokenBucket.waitForTokens(1)
+	// 	rateLimiter.npm.reqCounter.addRequest()
+	// 	const manifest = await getPackageManifest({ name: dependency })
+	// 	depMap.set(dependency, manifest)
+	// }
+
+	dependencies.map((value) => {})
+
+	const depList = await Promise.all(dependencies.map(dependency => 
+		getSingleDep(dependency, rateLimiter)
+	));
+
+	for (const dependency of depList) {
+		depMap.set(dependency.name, dependency.data)
+	}
+
+	return depMap;
+}
+
+function mergeDependenciesLists(repos: Awaited<ReturnType<typeof findDependencies>>[]): string[] {
+	let deps = new Set<string>()
+
+	for(const repo of repos){
+		for(const name in repo[4]){
+			deps.add(name)
+		}
+	}
+
+	return Array.from(deps.values());;
 }
 
 function depDataToJson(nameMap: Map<string, number>, data: Map<number, {version: string, link: string, internal: boolean, archived: boolean}>): string{
@@ -211,15 +254,29 @@ function depDataToJson(nameMap: Map<string, number>, data: Map<number, {version:
 	return res
 }
 
-function generateDependencyTree(data: Awaited<ReturnType<typeof findDependencies>>[]): any {
+function generateDependencyTree(data: Awaited<ReturnType<typeof findDependencies>>[], depMap: Awaited<ReturnType<typeof getNpmDeps>>): any {
 	let depNameMap: Map<string, number> = new Map();
 
 	let depData: Map<number, {version: string, link: string, internal: boolean, archived: boolean}> = new Map();
 
+	// //TODO: The newest array should be shared across all dependencies
+	// for (const [depName, depVersion] of newest) {
+	// 	if (!depNameMap.has(depName)) {
+	// 		depNameMap.set(depName, depNameMap.size)
+	// 		depData.set(depNameMap.get(depName), {version: "", link: "", internal: false,  archived: false})
+	// 	}
+	// 	depData.get(depNameMap.get(depName)).version = depVersion
+	// }
+	for (const [name, data] of depMap){
+		const id = depNameMap.size
+		depNameMap.set(name, id)
+	  	depData.set(id, {version: data.version, link: "", internal: false,  archived: false})
+	}
+
 	let repos: any[] = [];
 
 	//This version here is wrong, we only use it if we have nothing else (it will get overwritten later)
-	for (const [name, version, link, isArchived, dependencies, newest] of data) {
+	for (const [name, version, link, isArchived, dependencies] of data) {
 		if (!depNameMap.has(name)) {
 			depNameMap.set(name, depNameMap.size)
 			depData.set(depNameMap.get(name), {version: version ? version : "", link: link, internal: true, archived: isArchived})
@@ -228,14 +285,14 @@ function generateDependencyTree(data: Awaited<ReturnType<typeof findDependencies
 			depData.get(depNameMap.get(name)).internal = true
 		}
 
-		//TODO: The newest array shouldn be shared across all dependencies
-		for (const [depName, depVersion] of newest) {
-			if (!depNameMap.has(depName)) {
-				depNameMap.set(depName, depNameMap.size)
-				depData.set(depNameMap.get(depName), {version: "", link: "", internal: false,  archived: false})
-			}
-			depData.get(depNameMap.get(depName)).version = depVersion
-		}
+		// //TODO: The newest array should be shared across all dependencies
+		// for (const [depName, depVersion] of newest) {
+		// 	if (!depNameMap.has(depName)) {
+		// 		depNameMap.set(depName, depNameMap.size)
+		// 		depData.set(depNameMap.get(depName), {version: "", link: "", internal: false,  archived: false})
+		// 	}
+		// 	depData.get(depNameMap.get(depName)).version = depVersion
+		// }
 
 		let deps = []
 
@@ -340,7 +397,11 @@ async function main() {
 		// }
 	}
 
-	const allDeps: Awaited<ReturnType<typeof findDependencies>>[] =  await Promise.all(allDepPromises);
+	const allDeps: Awaited<ReturnType<typeof findDependencies>>[] =  await Promise.all(allDepPromises)
+
+	const npmDeps = mergeDependenciesLists(allDeps)
+
+	const depDataMap = await getNpmDeps(npmDeps, rateLimiter)
 
 	//Wait for all requests to finish
 	console.log("Waiting for all requests to finish")
@@ -361,7 +422,7 @@ async function main() {
 
 	printRateLimitInfo(startTime, endTime, rateLimiter);
 
-	console.log(JSON.stringify(generateDependencyTree(allDeps)))
+	console.log(JSON.stringify(generateDependencyTree(allDeps, depDataMap)))
 }
 
 main()
