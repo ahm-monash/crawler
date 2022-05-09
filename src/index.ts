@@ -1,6 +1,6 @@
 import { Octokit, RestEndpointMethodTypes } from "@octokit/rest";
 import { TokenBucket } from "./rate-limiting/token-bucket";
-import { getAccessToken, loadConfig, writeFile } from "./utils";
+import { getAccessToken, loadConfig, sleep, writeFile } from "./utils";
 import { generateDependencyTree } from "./outputData";
 import { getDependenciesNpm, getDependenciesPyPI, Repository, APIParameters, PackageRateLimiter } from "./packageAPI";
 import { DependencyGraphDependency, GraphResponse, OrgRepos, RepoEdge, BranchManifest, UpperBranchManifest, queryDependencies, queryRepositories } from "./graphQLAPI"
@@ -64,7 +64,7 @@ function getRepoDependencies(repo: BranchManifest) {
 					const version = ""//file.node.version
 					const depCount = file.node.dependencies.totalCount
 
-					if(!repoDepObj.packageMap.has(packageManager.name)){
+					if (!repoDepObj.packageMap.has(packageManager.name)) {
 						repoDepObj.packageMap.set(packageManager.name, [])
 					}
 
@@ -91,7 +91,7 @@ function getAllRepoDeps(repoList: BranchManifest[]) {
 	let all_dependencies: ReturnType<typeof getRepoDependencies>[] = []
 	for (const repo of repoList) {
 		const deps = getRepoDependencies(repo)
-		if(deps.packageMap.size > 0){
+		if (deps.packageMap.size > 0) {
 			all_dependencies.push(deps)
 		}
 	}
@@ -103,10 +103,10 @@ function mergeDependenciesLists(managerRepos: Map<string, Repository[]>): Map<st
 
 	for (const [packageManager, repos] of managerRepos) {
 		//console.log(packageManager)
-		for(const repo of repos){
+		for (const repo of repos) {
 			for (const [name, version] of repo.dependencies) {
 				//console.log("\t" + name)
-				if(!deps.has(packageManager)){ deps.set(packageManager, new Set()) }
+				if (!deps.has(packageManager)) { deps.set(packageManager, new Set()) }
 				deps.get(packageManager).add(name);
 			}
 		}
@@ -114,21 +114,26 @@ function mergeDependenciesLists(managerRepos: Map<string, Repository[]>): Map<st
 
 	let managerDeps: Map<string, string[]> = new Map()
 
-	for(const [key, value] of deps){
+	for (const [key, value] of deps) {
 		managerDeps.set(key, Array.from(value.values()))
 	}
 
 	return managerDeps
 }
 
-async function scrapeOrganisation(config: ReturnType<typeof loadConfig>, accessToken: string){
+//The minimum amount of github points needed in oreder to scrape an Organisation
+//Note: This value is just a guess.	
+const MINIMUM_GITHUB_POINTS = 10;
+
+async function scrapeOrganisation(config: ReturnType<typeof loadConfig>, accessToken: string) {
 	let allDeps: Map<string, Repository[]> = new Map()
 
 	let repoCursors: string[] = []
 
 	let hasNextPage = false;
 	let repoCursor = null;
-	do{
+
+	do {
 		const response = await queryRepositories(config.targetOrganisation, null) as OrgRepos
 
 		for (const repo of response.organization.repositories.edges) {
@@ -138,24 +143,59 @@ async function scrapeOrganisation(config: ReturnType<typeof loadConfig>, accessT
 		hasNextPage = response?.organization?.repositories?.pageInfo?.hasNextPage
 		if (hasNextPage) {
 			repoCursor = response?.organization?.repositories?.pageInfo?.endCursor
+
 		}
 
-	} while(hasNextPage)
-	// overwrite the first value to null
+		const remaining = response.rateLimit.remaining
+		const resetDate = new Date(response.rateLimit.resetAt)
+
+		if (remaining < MINIMUM_GITHUB_POINTS) {
+			// use absolute, because the are cases in which the reset date could be behind current date (now) 
+			const diff_seconds = Math.abs(resetDate.getTime() - Date.now()) / (1000)
+
+			throw new Error(`Rate limit reached. Waiting ${diff_seconds} seconds.`)
+		}
+
+
+	} while (hasNextPage)
+	// overwrite the first value to null so that we get the first
 	repoCursors[0] = null
 	repoCursor = null;
 	hasNextPage = false;
 
-	let responses: Promise<GraphResponse>[] = []
+	//this is just for waiting, we will only use successfullResponses and failedResponses
+    let allPromises: Promise<void>[] = []
+	let successfullResponses: GraphResponse[] = []
+	let failedResponses: string[] = []
+
 	const numOfPages = 3
-	for (let curCursor = 0; curCursor < repoCursors.length; curCursor+=numOfPages){
-		responses.push(queryDependencies(config.targetOrganisation, numOfPages, repoCursors[curCursor]) as Promise<GraphResponse>)
+	for (let curCursor = 0; curCursor < repoCursors.length; curCursor += numOfPages) {
+		const dependencyResponse = queryDependencies(config.targetOrganisation, numOfPages, repoCursors[curCursor]) as Promise<GraphResponse>
+
+		//curCursor must be copied into a const otherwise its value will change by the time the promise is resolved
+		const curCursorCopy = curCursor;
+		
+		allPromises.push(dependencyResponse
+			.then((r) => {
+				successfullResponses.push(r)
+			})
+			.catch(e => {
+				failedResponses.push(repoCursors[curCursorCopy])
+				console.log(`Unexpected error: ${e}`)
+			}))
+
 	}
 	console.log("Fetched all repositories cursors");
-	await Promise.all(responses);
+	
+	await Promise.all(allPromises);
 
-	for(const responsePromise of responses){
-		const response = await responsePromise
+	if(failedResponses.length > 0) {
+		//TODO: ???
+		console.log(`Failed to fetch ${failedResponses.length} repositories`)
+	}
+
+	for (const response of successfullResponses) {
+
 		for (const repo of response?.organization?.repositories?.edges) {
 			const ref = repo.node.mainBranch ? repo.node.mainBranch : repo.node.masterBranch;
 			if (ref == null) {
@@ -180,7 +220,7 @@ async function scrapeOrganisation(config: ReturnType<typeof loadConfig>, accessT
 		for (const repo of allRepoDeps) {
 			const name = repo.manifest.name
 
-			for(const [packageManager, depList] of repo.packageMap){
+			for (const [packageManager, depList] of repo.packageMap) {
 				for (const subRepo of depList) {
 					let deps: Map<string, string> = new Map();
 
@@ -196,7 +236,7 @@ async function scrapeOrganisation(config: ReturnType<typeof loadConfig>, accessT
 						dependencies: deps
 					}
 
-					if(!allDeps.has(packageManager)){
+					if (!allDeps.has(packageManager)) {
 						allDeps.set(packageManager, [])
 					}
 					allDeps.get(packageManager).push(rep)
