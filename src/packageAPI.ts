@@ -29,7 +29,7 @@ export const APIParameters = {
 export const packageManagerFiles = [
 	{ name: "NPM", extensions: ["package.json"] },
 	{ name: "PYPI", extensions: ["requirements.txt"] },
-	{ name: "RUBYGEMS", extensions: ["Gemfile"] },
+	{ name: "RUBYGEMS", extensions: ["Gemfile", ".gemspec"] },
 ]
 
 //Ratelimiter is a POJO that contains a TokenBuckets and RequestCounters for each API source.
@@ -48,6 +48,7 @@ export type PackageRateLimiter = {
 
 export type Repository = {
 	name: string,
+	oldName: string,
 	version: string,
 	link: string,
 	isArchived: boolean,
@@ -55,7 +56,7 @@ export type Repository = {
 }
 
 //Gets the information for a single npm dependecy from the external service.
-export async function queryDependenyNpm(dependency: string, rateLimiter: PackageRateLimiter) {
+export async function queryDependencyNpm(dependency: string, rateLimiter: PackageRateLimiter) {
 	await rateLimiter.npm.tokenBucket.waitForTokens(1)
 
 	let manifest
@@ -191,7 +192,7 @@ async function getDependencies(dependencies: string[], rateLimiter: PackageRateL
 
 //Calls the npm API for all dependencies in the given list
 export async function getDependenciesNpm(dependencies: string[], rateLimiter: PackageRateLimiter) {
-	return getDependencies(dependencies, rateLimiter, queryDependenyNpm)
+	return getDependencies(dependencies, rateLimiter, queryDependencyNpm)
 }
 
 //Calls the PyPI API for all dependencies in the given list
@@ -203,3 +204,9 @@ export async function getDependenciesPyPI(dependencies: string[], rateLimiter: P
 export async function getDependenciesRubyGems(dependencies: string[], rateLimiter: PackageRateLimiter) {
 	return getDependencies(dependencies, rateLimiter, queryDependencyRubyGems)
 }
+
+
+
+// export async function getNPMMetadata(packageJSON:type) {
+
+// }

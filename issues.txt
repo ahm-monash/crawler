@@ -1,4 +1,0 @@
-When querying our GitHub Organisation (ahm-monash (actually, it may have been querying Octokit, which is even worse)):
-(node:11620) UnhandledPromiseRejectionWarning: HttpError: Unknown error: {"data":null,"errors":[{"message":"Something went wrong while executing your query. This may be the result of a timeout, or it could be a GitHub bug. Please include `C6FE:1106:1BAE2F:1E7188:6275BD37` when reporting this issue."}]}
-    at E:\Development\Uni\FIT4002\repocrawler\node_modules\@octokit\request\dist-node\index.js:86:21
-    at processTicksAndRejections (internal/process/task_queues.js:95:5)

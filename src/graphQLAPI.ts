@@ -4,6 +4,9 @@ import {
     graphql,
 } from "@octokit/graphql";
 
+import { Octokit, RestEndpointMethodTypes } from "@octokit/rest";
+import { TokenBucket } from "./rate-limiting/token-bucket";
+
 export type DependencyGraphDependency = {
 	packageName: string
 	requirements: string
@@ -184,6 +187,7 @@ export async function queryDependencies(organisation: string, numOfPages: number
   // refer to this on how to query different branches/ref,
   // https://stackoverflow.com/questions/51504760/how-to-get-all-repos-that-contain-a-certain-branch-on-githubs-graphql-api
   // TODO: limit to default branch, current setup no working
+  // TODO: implement V2 version of this query, refer to Postman
   let query: string =
     `
 	query orgRepos($organisation: String!, $numOfPages: Int!, $repoCursor: String, $dependencyLimit: Int!) {
@@ -269,7 +273,7 @@ export async function queryDependencies(organisation: string, numOfPages: number
  * @param manifestPaths manifest paths, must be relative to the repository root, must have a length of less than 10
  * @returns return at most 10 manifests objects
  */
-export async function queryRepoManifest(organisation: string, repoName: string, defaultBranch:string, manifestPaths: string[], token: string) : Promise<GraphQlQueryResponseData> {
+export async function queryRepoManifest(organisation: string, repoName: string, defaultBranch:string, manifestPaths: string[], token: string) : Promise<string[]> {
 
 	// https://graphql.org/learn/queries/#inline-fragments
 	// rev-parse compatible path
@@ -279,6 +283,7 @@ export async function queryRepoManifest(organisation: string, repoName: string, 
 
 	if (manifestPaths.length > 10) {
 		manifestPaths = manifestPaths.slice(0, 10)
+		console.warn("Slicing only the first 10 manifests")
 	}
 
 	let query: string =
@@ -306,6 +311,49 @@ export async function queryRepoManifest(organisation: string, repoName: string, 
 		repoName: repoName,
 		defaultBranch: defaultBranch,
 	  }
-
-	return queryGraphQL(query, param, token)
+	  const res: GraphQlQueryResponseData = await queryGraphQL(query, param, token);
+	  return new Promise((resolve, reject) => {
+		const files: string[] = [];
+		for (const manifest in res.repository) {
+		  files.push(res.repository[manifest]?.text);
+		}
+		resolve(files);
+	  });
   }
+
+  export async function queryRepoManifestRest(organisation: string, repoName: string, path: string, token: string, TokenBucket: TokenBucket): Promise<any> {
+	TokenBucket.waitForTokens(1)
+	const octokit = new Octokit({
+		auth: token,
+		log: {
+			debug: () => { },
+			info: () => { },
+			warn: console.warn,
+			error: console.error,
+		},
+		request: {
+			agent: undefined,
+			fetch: undefined,
+			timeout: 30000,
+		}
+	})
+
+	const packageJsonContent = await octokit.repos.getContent({
+		owner: organisation,
+		repo: repoName,
+		path: path,
+	})
+		.then(res => (res.data as any)?.content) //the content keyword is not guaranteed to be present in the response
+		.then(content => {
+			if (content === null) {
+				throw new Error("manifest file is empty");
+			}
+			return content as string;
+		})
+		.then(content => Buffer.from(content, 'base64').toString()) // the content is served as base64, so we need to decode it into a string
+		.then(content => JSON.parse(content)); // parse the JSON in the package.json
+	// console.log(packageJsonContent)
+	//Use the npm api to get the version of dependencies
+
+	return packageJsonContent
+}

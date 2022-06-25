@@ -1,6 +1,6 @@
 {
   "name": "evergreen-org-crawler",
-  "version": "0.0.2",
+  "version": "0.0.4",
   "description": "",
   "main": "index.js",
   "scripts": {
@@ -20,8 +20,8 @@
   },
   "dependencies": {
     "@octokit/rest": "^18.12.0",
-    "graphql": "^16.5.0",
     "es6-map": "^0.1.5",
+    "graphql": "^16.5.0",
     "inquirer": "^8.2.4",
     "query-registry": "^2.5.0",
     "sqlite": "^4.1.1",
